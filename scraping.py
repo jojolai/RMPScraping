@@ -67,7 +67,7 @@ for url in urls:
 
 	while(True):
 		try:
-			WebDriverWait(driver, 2).until(EC.presence_of_element_located((By.ID, 'loadMore')))
+			WebDriverWait(driver, 0.1).until(EC.presence_of_element_located((By.ID, 'loadMore')))
 			time.sleep(0.1) #fixes bug where duplicate comments are loaded because button is pressed too fast
 		except TimeoutException:
 			print("loadMore button not found")
@@ -155,7 +155,8 @@ for url in urls:
 		else:
 			comment_set.add(comment)
 			comment_list.append(comment)
-	print("found ", len(comment_list), " comments")
+	numComments =  page_soup.find('div', {'class': 'table-toggle rating-count active'}).text.split("\n")[1].strip().split(" ")[0]
+	print("found ", len(comment_list), " out of ", numComments, " comments")
 	for comment in comment_list:
 		commentData = [0]*len(commentDataCriteria)
 		#each comment is a row in the commentData dataframe

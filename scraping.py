@@ -15,8 +15,32 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 import numpy as numpy
 import pandas as pd
+import csv
+import json
+from sklearn.feature_extraction.text import CountVectorizer
+import MySQLdb
+import datetime
+
+mydb = MySQLdb.connect(
+  host="localhost",
+  user="root",
+  passwd="joe1234lai",
+  db = "mysql"
+)
+mycursor = mydb.cursor()
+
+mycursor.execute("USE RMP")
 
 urls = ["https://www.ratemyprofessors.com/ShowRatings.jsp?tid=601493&showMyProfs=true","https://www.ratemyprofessors.com/ShowRatings.jsp?tid=558674&showMyProfs=true","https://www.ratemyprofessors.com/ShowRatings.jsp?tid=64638&showMyProfs=true"]
+
+profIds =[]
+
+
+with open('profIdMap.csv') as csvfile:
+    readCSV = csv.reader(csvfile, delimiter=',')
+    for row in readCSV:
+        profIds.append(row[2])
+profIds = profIds[1:]
 
 #boot chrome driver with adblock
 executable_path = "/usr/local/chromedriver"
@@ -49,37 +73,38 @@ except TimeoutException:
 
 
 #initialize data frame labels
-profDataCriteria = ["FN","LN","School","Department","City","State","OQ","WTA","LOD","gives good feedback","respected","lots of homework","accessible outside class","get ready to read","participation matters","skip class? you won't pass.","inspirational","graded by few things","test heavy","group projects","clear grading criteria","hilarious","beware of pop quizzes","amazing lectures","lecture heavy","caring","extra credit","so many papers","tough grader"]
+profDataCriteria = ["FN","LN","School","Department","City","State","OQ","WTA","LOD","gives good feedback","respected","lots of homework","accessible outside class","get ready to read","participation matters","skip class? you won't pass.","inspirational","graded by few things","test heavy","group projects","clear grading criteria","hilarious","beware of pop quizzes","amazing lectures","lecture heavy","caring","extra credit","so many papers","tough grader","number of comments","prof_id","num_female_words","num_male_words","percent_female","gender"]
 commentDataCriteria = ["Date","FN","LN","School","OQ","LOD","WTA","Course","for credit"]
 commentDataCriteria.extend(["textbook used","grade received","attendence","comment","num found this useful", "num did not find this useful"])
 commentDataCriteria.extend(profDataCriteria[9:29])
+commentDataCriteria.extend(["comment_id"])
 
-#initialize allProfData and allCommentData
-allProfData = []
-allCommentData = []
+femaleIDWords = ["her", "hers", "she", "she'll", "she's"]
+maleIDWords = ["he", "him", "his", "he'll", "he's"]
+# #initialize allProfData and allCommentData
+# allProfData = []
+# allCommentData = []
 
-for url in urls:
+
+# with open('commentData.csv', mode='a') as commentDataCSV:
+# with open('testCommentData.csv', mode='a') as commentDataCSV:
+# 	# with open ('profData.csv', mode='a') as profDataCSV:
+# 	with open ('testProfData.csv', mode='a') as profDataCSV:
+# comment_data_writer = csv.writer(commentDataCSV, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+# prof_data_writer = csv.writer(profDataCSV)
+# write headers 
+# comment_data_writer.writerow(commentDataCriteria)
+# prof_data_writer.writerow(profDataCriteria)
+
+
+for prof in [601493]: # profIds:
+	driver.get("https://www.ratemyprofessors.com/paginate/professors/ratings?tid="+ str(prof) +"&filter=&courseCode=&page=1")
+	data = json.loads(driver.page_source.split(">")[5][:-5])
+	if(len(data["ratings"]) == 0):
+		print("found prof with no ratings, done parsing")
+		break
+	url = "https://www.ratemyprofessors.com/ShowRatings.jsp?tid="+ str(prof) +"&showMyProfs=true"
 	driver.get(url)
-	try:
-		driver.find_element_by_class_name("tbl-read-more-btn").click()
-	except NoSuchElementException:
-		print("tbl-read-more-btn not found, trying loadMore Button")
-
-	while(True):
-		try:
-			WebDriverWait(driver, 0.1).until(EC.presence_of_element_located((By.ID, 'loadMore')))
-			time.sleep(0.1) #fixes bug where duplicate comments are loaded because button is pressed too fast
-		except TimeoutException:
-			print("loadMore button not found")
-			break
-		try:
-			driver.find_element_by_id("loadMore").click()
-		except ElementNotVisibleException:
-			print("loadMore button not found")
-			break
-		except WebDriverException:
-			print("loadMore button has been hidden")
-			break
 
 	#offload html into variable
 	page_html = driver.page_source
@@ -87,8 +112,10 @@ for url in urls:
 	page_soup = soup(page_html, "html.parser")
 
 	#row in profDataDF
-	profData = [0]*29
-
+	profData = [0]*35 
+	numComments =  page_soup.find('div', {'class': 'table-toggle rating-count active'}).text.split("\n")[1].strip().split(" ")[0]
+	profData[29] = numComments
+	profData[30] = prof #stores id
 	#find different parts of prof page
 	prof_name = page_soup.find('h1',{'class':'profname'})
 	prof_name_str = ''
@@ -98,7 +125,7 @@ for url in urls:
 	#finished parsing professor's name stored in prof_name_str	
 	prof_first_name = prof_name_str.split(' ')[0]
 	prof_last_name = prof_name_str.split(' ')[1]
-	print("done parsing professor's name, first name: ", prof_first_name, "; last name: ", prof_last_name)
+	print("parsing prof, first name: ", prof_first_name, "; last name: ", prof_last_name)
 	profData[0] = prof_first_name
 	profData[1] = prof_last_name
 
@@ -141,142 +168,106 @@ for url in urls:
 			index = tag_map[tag.contents[0].strip().lower()]
 			profData[index] = tag.contents[1].contents[0].split("(")[1].split(")")[0]
 
-	allProfData.append(profData)
+	# allProfData.append(profData)
+	
+	pageNum = 1
+	numCommentsFound = 0
+	maleWordCount = 0
+	femaleWordCount = 0
+	while(True):
+		jsonUrl = "https://www.ratemyprofessors.com/paginate/professors/ratings?tid="+ str(prof) +"&filter=&courseCode=&page=" + str(pageNum) 
+		driver.get(jsonUrl)
 
-	#comment parsing begins here
-	comment_table = page_soup.find('table', {'class': 'tftable'}) #finds table with comments
-	#cleanses comment table to create list of unique comments
-	comment_list = [] #list of unique comments 
-	comment_set = set()
-	for comment in comment_table.find_all("tr",{"class": ["","even"]}):
-		c_id = comment['id']
-		if(c_id in comment_set): 
-			continue #prevents duplicate comments from being added
-		else:
-			comment_set.add(comment)
-			comment_list.append(comment)
-	numComments =  page_soup.find('div', {'class': 'table-toggle rating-count active'}).text.split("\n")[1].strip().split(" ")[0]
-	print("found ", len(comment_list), " out of ", numComments, " comments")
-	for comment in comment_list:
-		commentData = [0]*len(commentDataCriteria)
-		#each comment is a row in the commentData dataframe
-		commentData[0] = comment.find('div', {'class': 'date'}).text
-		#data that we already have
-		commentData[1] = prof_first_name
-		commentData[2] = prof_last_name
-		commentData[3] = prof_school
+		jsonData = json.loads(driver.page_source.split(">")[5][:-5])
 
-		OQ = ""
-		LOD = ""
-		for metric in comment.findAll('span', {'class': 'descriptor'}):
-			if(metric.text == "Overall Quality"):
-				OQ = metric.previous.previous
-			else:
-				LOD = metric.previous.previous
-		commentData[4] = OQ #overall quality
-		commentData[5] = LOD #level of difficulty
-
-		#other metrics
-		course = ""
-		credit = ""
-		attendance = ""
-		textbook = ""
-		WTA = ""
-		grade = ""
-
-		afterLoad = False
-		responses = comment.findAll('span', {'class': 'response'})
-		if(responses == []):
-			afterLoad = True
-			metrics = comment.find('td', {'class': 'class'}).contents
-			for metric in metrics:
-				if(metric == "\n"):
-					continue
-				else:
-					metric_for = metric.get("class")[0]
-					if(metric_for == "name"):
-						course = metric.text
-					else:
-						metricStr = metric.text.split(":")[1].strip()
-						if(metric_for == "credit"):
-							credit = metricStr
-						elif(metric_for == "attendance"):
-							attendance = metricStr
-						elif(metric_for == "textbook-used"):
-							textbook = metricStr
-						elif(metric_for == "would-take-again"):
-							WTA = metricStr
-						else:
-							grade = metricStr
-		else:
-			for metric in responses:
-				metric_for = metric.parent.get("class")[0]
-				if(metric_for == "name"):
-					course = metric.text
-				elif(metric_for == "credit"):
-					credit = metric.text
-				elif(metric_for == "attendance"):
-					attendance = metric.text
-				elif(metric_for == "textbook-used"):
-					textbook = metric.text
-				elif(metric_for == "would-take-again"):
-					WTA = metric.text
-				else:
-					grade = metric.text
-		
-
-		commentData[6] = WTA
-		commentData[7] = course
-		commentData[8] = credit
-		commentData[9] = textbook
-		commentData[10] = grade
-		commentData[11] = attendance
-		
-		#comment string, i.e. what the student wrote about the professor
-		commentStr = ""
-		if(afterLoad):
-			commentStr = comment.find('td', {'class': 'comments'}).find('p').text.strip()
-		else:	
-			commentStr = comment.find('p', {'class': 'commentsParagraph'}).text.strip()
-		commentData[12] = commentStr
-
-		#how many ppl found this comment helpful/unhelpful...some strings are not cleansed for "\n" so for loop does that
-		helpful = comment.find("a", {"class":"helpful"}).find("span", {"class":"count"}).text.split("\n")
-		for term in helpful:
-			if(not (term == "")):
-				helpful = term
-				break
-		helpful = helpful.strip()
-		#same problem as above
-		notHelpful = comment.find("a", {"class":"nothelpful"}).find("span", {"class":"count"}).text.split("\n")
-		for term in notHelpful:
-			if(not (term == "")):
-				notHelpful = term
-				break
-		notHelpful = notHelpful.strip()
-		commentData[13] = helpful
-		commentData[14] = notHelpful
-
-		tag_box = comment.find("div", {"class":"tagbox"}).contents
-		for tag in tag_box:
-			if(tag == "\n"):
-				continue
-			else:
-				index = tag_map[tag.text.lower()] + 6
+		for comment in jsonData["ratings"]:
+			numCommentsFound += 1
+			commentData = [0]*len(commentDataCriteria)
+			#each comment is a row in the commentData dataframe
+			commentData[-1] = comment["id"]
+			#convert date to mysql format, aka from mm/dd/yyyy to yyyy-mm-dd
+			commentData[0] = datetime.datetime.strptime(comment["rDate"], '%m/%d/%Y').strftime('%Y-%m-%d')   
+			#data that we already have
+			commentData[1] = prof_first_name
+			commentData[2] = prof_last_name
+			commentData[3] = prof_school
+			commentData[4] = comment["rOverall"] #overall quality
+			# print(type(commentData[4]))
+			commentData[5] = comment["rEasy"] #level of difficulty
+			commentData[6] = comment["rWouldTakeAgain"]
+			commentData[7] = comment["rClass"]
+			commentData[8] = comment["takenForCredit"]
+			commentData[9] = comment["rTextBookUse"]
+			commentData[10] = comment["teacherGrade"]
+			commentData[11] = comment["attendance"]
+			commentData[12] = comment["rComments"]
+			# removes "\r" from comments because it messes csv formatting up
+			commentStr = ""
+			for part in commentData[12].split("\r"):
+				commentStr = commentStr + part
+			commentData[12] = commentStr
+			#count gender words
+			#initialize word count dictionary for comment
+			vectorizer = CountVectorizer()
+			try:
+				vectorizer.fit([commentStr])
+				wordCountDict = vectorizer.vocabulary_
+				for maleWord in maleIDWords:
+					maleWordCount += wordCountDict.get(maleWord, 0)
+				for femaleWord in femaleIDWords:
+					femaleWordCount += wordCountDict.get(femaleWord, 0)
+			except ValueError:
+				pass
+			commentData[13] = comment["helpCount"]
+			commentData[14] = comment["notHelpCount"]
+			tag_box = comment["teacherRatingTags"]
+			for tag in tag_box:
+				index = tag_map[tag.lower()] + 6
 				commentData[index] = 1
-
-		# tag_box = comment.contents[5].contents[1]
-		allCommentData.append(commentData)
-
+			# allCommentData.append(commentData)
+			# write to csv
+			# print(tuple (commentData))
+			# comment_data_writer.writerow(commentData) # for writing into csv
+			# print((tuple (commentData)))
+			mycursor.execute("INSERT INTO `commentData` VALUES {0};".format(tuple (commentData)))
+			mydb.commit()
+		if(jsonData["remaining"] == 0):
+			print("done parsing comments: found ", numCommentsFound, " out of ", numComments, " comments")
+			if(str(numCommentsFound) != numComments):
+				raise Exception('Number of comments parsed does not match number of comments found')
+			break
+		else:
+			pageNum += 1
+	#determine gender mechanism
+	gender = "unknown"
+	percentFemale = 0.5
+	totalGenderWordCount = femaleWordCount + maleWordCount
+	if(totalGenderWordCount != 0):
+		percentFemale = femaleWordCount/totalGenderWordCount
+	if(percentFemale >= 0.7):
+		gender = "female"
+	elif (percentFemale <= 0.3):
+		gender = "male"
+	profData[31] = femaleWordCount
+	profData[32] = maleWordCount
+	profData[33] = percentFemale
+	profData[34] = gender
+	# print(tuple (profData))
+	# prof_data_writer.writerow(profData) #for writing to csv
+	# print((tuple (profData)))
+	mycursor.execute("INSERT INTO `profData` VALUES {0};".format(tuple (profData)))
+	mydb.commit()
 
 #create pandas dataframe for professor data(FN,LN, School, OQ, WTA, LOD, Tags)
-profDataDF = pd.DataFrame(allProfData, columns=profDataCriteria)# profData = pd.DataFrame([range(1,27), range(28,54)], columns=profDataList)
-commentDataDF = pd.DataFrame(allCommentData, columns=commentDataCriteria)
+# profDataDF = pd.DataFrame(allProfData, columns=profDataCriteria)# profData = pd.DataFrame([range(1,27), range(28,54)], columns=profDataList)
+# commentDataDF = pd.DataFrame(allCommentData, columns=commentDataCriteria)
 
-profDataDF.to_csv(path_or_buf = "/Users/JosephLai/Desktop/scraping/profData.csv")
-commentDataDF.to_csv(path_or_buf = "/Users/JosephLai/Desktop/scraping/commentData.csv")
+# profDataDF.to_csv(path_or_buf = "/Users/JosephLai/Desktop/scraping/profData.csv")
+# commentDataDF.to_csv(path_or_buf = "/Users/JosephLai/Desktop/scraping/commentData.csv")
 
 #used to calculate performance
 print('Time consumed:', time.time() - t)
-
+mydb.commit()
+mydb.close()
 driver.close()
+
